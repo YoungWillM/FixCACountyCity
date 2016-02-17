@@ -32,7 +32,7 @@ namespace FixCACountyCity
     public partial class frm_fixCA : Form
     {
         // indicates row does not contain data
-        string[] IgnoreStart = {"STATE", "CITY", "NOTE:", "RUN"};
+        string[] IgnoreStart = { "STATE", "CITY", "NOTE:", "RUN" };
         string[] IgnoreContains = { "ZIP050" };
 
         // index 4 contains zipcode
@@ -76,22 +76,21 @@ namespace FixCACountyCity
                 line = line.Trim();
                 if(line.Contains(IgnoreContains[0]))
                     continue;
-
-                line = line.Replace('*', ' '); // remove * from the line. For some reason, it could not be removed based upon length or anything else below
+                if(line.Contains('*'))
+                    line = line.Replace('*', ' '); // remove * from the line
                 splitLine = line.Split(new char[0], StringSplitOptions.RemoveEmptyEntries).ToList<string>(); // split on whitespace
                 if (splitLine.Count == 0 || IgnoreStart.Contains(splitLine[0]))
                     continue;
 
                 if (splitLine.Count > 0)
                     for (int i = splitLine.Count - 1; i > 0; i--)
-                        if (splitLine[i].Length == 1) // remove entries with a length of 1, removes extra values like *, P, and M
+                        if (splitLine[i].Length == 1) // remove entries with a length of 1, removes extra values like P and M
                             splitLine.RemoveAt(i);
 
                 ProcessLine(splitLine);
             }
 
             AddCountyNames();
-            
         }
 
         private void AddNewRow(string city, string zipCode, string geoCode, string countyCode)
@@ -120,7 +119,7 @@ namespace FixCACountyCity
 
             AddNewRow(city, zipCode, geoCode, countyCode);
 
-            // if the next value exists and is numbers, we have another entry for this city/county/zip with a different geo code
+            // if the next value exists and is a set of numbers, we have another entry for this city/county/zip with a different geo code
             if (splitLine.Count - 1 > j && Char.IsDigit(splitLine[j][0]))
             {
                 geoCode = splitLine[++j];
@@ -128,11 +127,12 @@ namespace FixCACountyCity
                 j++;
             }
 
-            // the next value exists, it will be the start of a new row
+            // if the next value exists, it will be the start of a new row
             if (splitLine.Count - 1 > j)
                 ProcessLine(splitLine.Skip(j).ToList<string>());
         }
 
+        // parse a modified ZIP050 that contains only California's county names and county codes and add the county names to the DB
         private void AddCountyNames()
         {
             Dictionary<string, string> counties = new Dictionary<string, string>();
@@ -169,19 +169,29 @@ namespace FixCACountyCity
 
         private void btn_fixFile_Click(object sender, EventArgs e)
         {
-            if (File.Exists(txt_path.Text))
+            if (File.Exists(txt_path.Text)) // make sure a valid path is given for the import file
             {
-                StreamReader fixFileReader = new StreamReader(txt_path.Text);
+                StreamReader fixFileReader = null;
+                try
+                {
+                    fixFileReader = new StreamReader(txt_path.Text); 
+                }
+                catch(Exception ex)
+                {
+                    MessageBox.Show("Unable to read import file. Please make sure it is not being used by another program." 
+                        + Environment.NewLine + Environment.NewLine + ex.Message);
+                    return;
+                }
                 string line = "";
                 string[] splitLine;
-                char[] splitChars = {'|'};
-                List<string> lineList = new List<string>();
-                bool changesMade = false;
+                char[] splitChars = {'|'}; // import file is pipe delimited
+                List<string> lineList = new List<string>(); // stores the list of parsed lines to be reassembled into the new file
+                bool changesMade = false; // boolean to determine if a new file needs to be written
 
-                while((line = fixFileReader.ReadLine()) != null)
+                while((line = fixFileReader.ReadLine()) != null) // read file one line at a time
                 {
                     splitLine = line.Split(splitChars);
-                    if(!splitLine[LEVEL].Equals("4"))
+                    if(!splitLine[LEVEL].Equals("4")) // if the tax level is not level 4, print a line to the log showing no change was made
                     {
                         txt_log.Text += splitLine[ZIP] + " " + splitLine[CITY] + " " + splitLine[COUNTY] + "Level " + splitLine[LEVEL] +
                             " Unchanged because it is not tax level 4." + Environment.NewLine;
@@ -189,33 +199,36 @@ namespace FixCACountyCity
                         continue;
                     }
 
-                    DataRow[] rows = zipsDataSet.CityCountyZip.Select("ZipCode = " + splitLine[ZIP]);
+                    // get an array of data rows that have the same zipcode as the import file line
+                    DataRow[] rows = zipsDataSet.CityCountyZip.Select("ZipCode = " + splitLine[ZIP]); 
                     bool matchFound = false;
                     foreach (DataRow row in rows)
                     {
+                        // look for a row that has the same city/county/zipcode as the import file line
                         if (row["City"].ToString().Trim().Equals(splitLine[CITY].Trim()) && row["County"].ToString().Trim().Equals(splitLine[COUNTY].Trim()))
                         {
                             matchFound = true;
                             break;
                         }
                     }
-                    if (matchFound)
+                    if (matchFound) // if a match was found, print a line to the log showing no change was made
                     {
                         txt_log.Text += splitLine[ZIP] + " " + splitLine[CITY] + " " + splitLine[COUNTY] + "Level " + splitLine[LEVEL] +
                             " Unchanged because the zip, city, and county match." + Environment.NewLine;
                         lineList.Add(ReassembleLine(splitLine));
                         continue;
                     }
+                    // a match was not found. print a line to the log showing that the city and county will be changed to match the city and county of a matching zipcode row
                     txt_log.Text += splitLine[ZIP] + " " + splitLine[CITY] + " " + splitLine[COUNTY] + "Level " + splitLine[LEVEL] +
                             " City changed to " + rows[0]["City"].ToString() + " County changed to " + rows[0]["County"].ToString() + Environment.NewLine;
 
                     splitLine[CITY] = rows[0]["City"].ToString();
                     splitLine[COUNTY] = rows[0]["County"].ToString();
-                    lineList.Add(ReassembleLine(splitLine));
+                    lineList.Add(ReassembleLine(splitLine)); // add the edited line to the list of parsed lines for the new file
                     changesMade = true;
                 }
 
-                if (changesMade)
+                if (changesMade) // if changes were made, generate a new file containing the changed data
                 {
                     string newFilePath = txt_path.Text;
                     newFilePath = newFilePath.Insert(txt_path.Text.Length - 4, "-Fixed");
@@ -227,6 +240,7 @@ namespace FixCACountyCity
                 MessageBox.Show("Invalid File Path");
         }
 
+        // used to piece a string array that has been split, back into a single pipe delimited string
         private string ReassembleLine(string[] splitLine)
         {
             string reassembledLine = "";
